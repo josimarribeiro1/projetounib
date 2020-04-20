@@ -1,0 +1,373 @@
+//+------------------------------------------------------------------+
+//|                                                     NewRobot.mq5 |
+//|                        Copyright 2020, MetaQuotes Software Corp. |
+//|                                             https://www.mql5.com |
+//+------------------------------------------------------------------+
+#property copyright "Copyright 2020, MetaQuotes Software Corp."
+#property link      "https://www.mql5.com"
+#property version   "1.00"
+
+
+//IMPORTAÇÃO DE BIBLIOTECAS
+#include <Trade\Trade.mqh>
+CTrade trade;
+
+// VARIAVEIS
+   double myPriceArray[];
+   
+   MqlTick  ultimoTick;
+   MqlRates rates[];
+   MqlDateTime horaAtual;
+   
+   bool posAberta;
+   bool ordPendente;
+   bool beAtivo;
+   
+   
+   double smaArray[];
+   int    smaHandle;
+   input int amv_periodo = 170;//Periodo Media
+   input int ema_fast = 6;//EMA rápida
+   input int ema_slow = 5;//EMA lenta
+   input int deslocar = 2;//Deslocar
+   input int sleeptime = 531;
+   input int lateralizacao = 41;
+   input int pontosacimadopreco = 5;
+   input int pontosabaixodopreco = 5;
+   
+   input ulong magicNum = 555556;//MagicNum
+   input ulong desvPts = 50;//Desvio em Pts
+   
+    
+   input double lote = 1.0;//Lote
+   input double stopLoss = 150.0;//Stop Loss
+   input double takeProfit = 100.0;//Take Profit
+   input double gatilhoBE =10.0;//Gatilho BreakEven
+   input double gatilhoTS =20.0;//Gatilho TrailingStop
+   input double stepTS =5.0;//Step TraillingStop
+
+ 
+   double PRC;//Preço normalizado
+   double STL;//StopLoss normalizado
+   double TKP;//TakeProfit normalizado
+   
+
+int OnInit()
+  {
+
+   trade.SetTypeFilling(ORDER_FILLING_RETURN);
+   trade.SetDeviationInPoints(desvPts);
+   trade.SetExpertMagicNumber(magicNum);
+   
+//+------------------------------------------------------------------+
+
+   // PLOTAGEM  DA LINHA MEDIA MOVEL NO GRÁFICO
+   smaHandle = iAMA(_Symbol,_Period, amv_periodo, ema_fast, ema_slow, deslocar,PRICE_LOW);
+   if(smaHandle==INVALID_HANDLE)
+      {
+         Print("Erro ao criar AMV - erro", GetLastError());
+         return(INIT_FAILED);
+      }
+      
+        
+   ArraySetAsSeries(smaArray, true);
+   ArraySetAsSeries(rates, true);
+
+
+//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+
+   return(INIT_SUCCEEDED);
+  }
+
+
+
+void OnDeinit(const int reason)
+  {
+
+
+
+}
+void OnTick()
+  {
+   datetime    tm=TimeCurrent();
+   MqlDateTime stm;
+   TimeToStruct(tm,stm);
+   //Copia do burffer do indicador e dos candles
+   
+   if(!SymbolInfoTick(_Symbol, ultimoTick))
+   {
+      Alert("Erro ao copiar informações de preços: ", GetLastError());
+      return;
+   }  
+   
+   if(CopyRates(_Symbol, _Period, 0, 3, rates)<0)
+   {
+      Alert("Erro ao obter informações de MqlRates: ", GetLastError());
+      return;
+   }
+   
+   if(CopyBuffer(smaHandle, 0, 0, 3, smaArray)<0)
+   {
+   Alert("Erro ao copiar dados da AVM: ", GetLastError());
+   return;
+   }  
+   
+
+//+------------------------------------------------------------------+  
+// Verifica se tem posição aberta
+   
+   posAberta = false;
+   for(int i = PositionsTotal()-1; i>=0; i--)
+      {
+         string symbol = PositionGetSymbol(i);
+         ulong  magic = PositionGetInteger(POSITION_MAGIC);
+         if(symbol  == _Symbol && magic==magicNum)
+            {
+               posAberta = true;
+               break;
+            }
+      }
+
+//+------------------------------------------------------------------+
+// Verifica se tem ordem pendente
+   
+   ordPendente = false;
+   for(int i = OrdersTotal()-1;  i>=0; i--)
+      {
+         ulong ticket =  OrderGetTicket(i);
+         string symbol = OrderGetString(ORDER_SYMBOL);
+         ulong magic = OrderGetInteger(ORDER_MAGIC);
+         if(symbol == _Symbol && magic == magicNum)
+            {
+               ordPendente = true;
+               break;
+            }
+      }
+   
+//+------------------------------------------------------------------+
+// Se uma ordem estiver aberta, faz o TraillingStop ou Breakeven. Ambos movimentam o stop automáticamente   
+   if(!posAberta)
+   {
+      beAtivo = false;
+   }
+   if(posAberta && !beAtivo)
+   {
+      BreakEven(ultimoTick.last);
+   }
+ 
+   if(posAberta && beAtivo)
+      {
+         TraillingStop(ultimoTick.last);
+      }
+
+
+//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+  
+// Verificação de condição para compra ou venda
+
+if(isNewBar())
+ {
+     
+   // CONDIÇÃO, CASO LINHA ACIMA DO CANDLE É COMPRA, ABAIXO VENDA
+   if((((stm.hour == 9) && (stm.min >=45)) && stm.hour <= 15) || (stm.hour>=10 && stm.hour<=15)){
+   
+   if(ultimoTick.last>smaArray[0] && rates[2].close>rates[2].open && rates[1].close>rates[1].open && (PRC - smaArray[0] >= lateralizacao * _Point ) && !posAberta && !ordPendente)
+   {
+      Sleep(sleeptime);
+     
+      Comment("Compra- ", magicNum);
+      
+      PRC = NormalizeDouble(ultimoTick.ask, _Digits);
+      
+      STL = NormalizeDouble(PRC - stopLoss,  _Digits);
+      
+      
+      TKP = NormalizeDouble(PRC + takeProfit, _Digits);
+     
+      if(trade.Buy(lote, _Symbol, PRC, STL, TKP, ""))
+      {
+         Print("Ordem de Compra - sem falha. ResultRetcode: ", trade.ResultRetcode(), "RetcodeDescription ", trade.ResultRetcodeDescription());
+      }
+      else
+      {
+         Print("Ordem de Compra - com falha. ResultRetcode: ", trade.ResultRetcode(), "RetcodeDescription ", trade.ResultRetcodeDescription());
+      }
+     
+   }  
+   else if(ultimoTick.last<smaArray[0] && rates[2].close>rates[2].open && rates[1].close<rates[1].open && (smaArray[0] - PRC >= lateralizacao * _Point ) && !posAberta && !ordPendente)
+   {
+      Sleep(sleeptime);
+     
+      Comment("Venda - ", magicNum);
+     
+      PRC = NormalizeDouble(ultimoTick.bid, _Digits);
+      STL = NormalizeDouble(PRC + stopLoss,  _Digits);
+      TKP = NormalizeDouble(PRC - takeProfit, _Digits);
+     
+     
+      if(trade.Sell(lote, _Symbol, PRC, STL, TKP, ""))
+      {
+         Print("Ordem de Venda - sem falha. ResultRetcode: ", trade.ResultRetcode(), "RetcodeDescription ", trade.ResultRetcodeDescription());
+      }
+      else
+      {
+         Print("Ordem de Venda - com falha. ResultRetcode: ", trade.ResultRetcode(), "RetcodeDescription ", trade.ResultRetcodeDescription());
+      }
+   
+   }
+ 
+ }
+ }
+ 
+}
+
+//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+// Verifica se é um candle novo.
+bool isNewBar()
+  {
+//--- memorize the time of opening of the last bar in the static variable
+   static datetime last_time=0;
+//--- current time
+   datetime lastbar_time=(datetime)SeriesInfoInteger(Symbol(),Period(),SERIES_LASTBAR_DATE);
+
+//--- if it is the first call of the function
+   if(last_time==0)
+     {
+      //--- set the time and exit
+      last_time=lastbar_time;
+      return(false);
+     }
+
+//--- if the time differs
+   if(last_time!=lastbar_time)
+     {
+      //--- memorize the time and return true
+      last_time=lastbar_time;
+      return(true);
+     }
+//--- if we passed to this line, then the bar is not new; return false
+   return(false);
+  }
+
+ 
+//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//Movimentação automática do Gain conforme o preço anda a favor.
+
+void TraillingStop(double preco)
+   {
+   Sleep(500);
+   
+      for(int i = PositionsTotal()-1; i>=0;  i--)
+         {
+            string symbol = PositionGetSymbol(i);
+            ulong magic = PositionGetInteger(POSITION_MAGIC);
+           
+            if(symbol == _Symbol && magic==magicNum)
+               {
+               
+                  ulong PositionTicket = PositionGetInteger(POSITION_TICKET);
+                  double StopLossCorrente = PositionGetDouble(POSITION_SL);
+                  double TakeProfitCorrente = PositionGetDouble(POSITION_TP);
+                  if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
+                     {
+                        if(preco >= (StopLossCorrente + gatilhoTS) )
+                           {
+                              double novoSL = NormalizeDouble(StopLossCorrente + stepTS, _Digits);
+                              if(trade.PositionModify(PositionTicket, novoSL, TakeProfitCorrente))
+                                 {
+                                    Print("TraillingStop  - sem falha. ResultRetcode: ", trade.ResultRetcode(), ", RetcodeDescription: ", trade.ResultRetcodeDescription());
+                                 }
+                                 else
+                                 {
+                                    Print("TraillingStop  - com falha. ResultRetcode: ", trade.ResultRetcode(), ", RetcodeDescription: ", trade.ResultRetcodeDescription());
+                                 }
+                           }
+                     }
+                     else if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
+                        {
+                           if(preco <= (StopLossCorrente - gatilhoTS))
+                              {
+                                 double novoSL = NormalizeDouble(StopLossCorrente - stepTS, _Digits);
+                                 if(trade.PositionModify(PositionTicket, novoSL, TakeProfitCorrente))
+                                    {
+                                       Print("TraillingStop  - sem falha. ResultRetcode: ", trade.ResultRetcode(), ", RetcodeDescription: ", trade.ResultRetcodeDescription());
+                                    }
+                                    else
+                                    {
+                                       Print("TraillingStop  - com falha. ResultRetcode: ", trade.ResultRetcode(), ", RetcodeDescription: ", trade.ResultRetcodeDescription());
+                                    }
+                              }
+                        }
+               
+               
+               }
+         
+         
+         
+         }
+   
+   
+   
+   }
+
+
+// Coloca o stop em 0x0 em caso de movimentação positiva do preço
+void BreakEven(double  preco)
+  {
+   Sleep(500);
+
+   for(int  i  = PositionsTotal()-1; i >=0; i--)
+     {
+      string symbol = PositionGetSymbol(i);
+      ulong magic = PositionGetInteger(POSITION_MAGIC);
+
+      if(symbol == _Symbol && magic == magicNum)
+        {
+         ulong PositionTicket = PositionGetInteger(POSITION_TICKET);
+         double PrecoEntrada = PositionGetDouble(POSITION_PRICE_OPEN);
+         double TakeProfitCorrente = PositionGetDouble(POSITION_TP);
+
+         if(PositionGetInteger(POSITION_TYPE) ==  POSITION_TYPE_BUY)
+           {
+            if(preco >= (PrecoEntrada + gatilhoBE))
+              {
+               if(trade.PositionModify(PositionTicket, PrecoEntrada + pontosacimadopreco *_Point, TakeProfitCorrente))
+                 {
+                  Print("Robo_Padrao BreakEven - sem falha. Valor do BreakEven", (PrecoEntrada + 5 *_Point), "ResultRetcode: ", trade.ResultRetcode(), ", RetcodeDescription: ", trade.ResultRetcodeDescription());
+                  beAtivo = true;
+                 }
+               else
+                 {
+                  Print("BreakEven - com falha. ResultRetcode: ", trade.ResultRetcode(), ", RetcodeDescription: ", trade.ResultRetcodeDescription());
+                 }
+              }
+           }
+
+         else
+            if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
+              {
+               if(preco <= (PrecoEntrada - gatilhoBE))
+                 {
+
+                  if(trade.PositionModify(PositionTicket, PrecoEntrada- pontosabaixodopreco *_Point, TakeProfitCorrente))
+                    {
+                     Print("Robo_Padrao BreakEven - sem falha. Valor do BreakEven", (PrecoEntrada + 5 *_Point), "ResultRetcode: ", trade.ResultRetcode(), ", RetcodeDescription: ", trade.ResultRetcodeDescription());
+                     beAtivo = true;
+                    }
+                  else
+                    {
+                     Print("BreakEven - com falha. ResultRetcode: ", trade.ResultRetcode(), ", RetcodeDescription: ", trade.ResultRetcodeDescription());
+                    }
+                 }
+              }
+        }
+
+     }
+
+  }
+
+//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
